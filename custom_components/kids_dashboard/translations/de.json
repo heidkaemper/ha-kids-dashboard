@@ -1,0 +1,30 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Music Assistant",
+        "description": "Kids Dashboard liest die Hörbücher mit ihren Sammlungen und Kapiteln direkt aus Music Assistant. Lege dafür in Music Assistant einen Langzeit-Token an, am besten für einen eigenen Benutzer.",
+        "data": {
+          "url": "Adresse von Music Assistant",
+          "token": "Token für Music Assistant"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Music Assistant ist nicht erreichbar oder lehnt den Token ab."
+    },
+    "abort": {
+      "already_configured": "Kids Dashboard ist schon eingerichtet."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Lieblingsserien",
+        "data": {
+          "featured": "Werden zuerst gezeigt, in dieser Reihenfolge"
+        }
+      }
+    }
+  }
+}

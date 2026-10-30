@@ -1,0 +1,13 @@
+{
+  "domain": "kids_dashboard",
+  "name": "Kids Dashboard",
+  "codeowners": ["@heidkaemper"],
+  "config_flow": true,
+  "dependencies": ["http", "frontend", "websocket_api", "lovelace"],
+  "after_dependencies": ["music_assistant"],
+  "documentation": "https://github.com/heidkaemper/ha-kids-dashboard",
+  "integration_type": "service",
+  "iot_class": "local_polling",
+  "requirements": [],
+  "version": "0.4.2"
+}

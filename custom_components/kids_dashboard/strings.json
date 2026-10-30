@@ -1,0 +1,30 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Music Assistant",
+        "description": "Kids Dashboard reads the audiobooks, their collections and chapters straight from Music Assistant. Make a long-lived token in Music Assistant, ideally for a user of its own.",
+        "data": {
+          "url": "Music Assistant address",
+          "token": "Music Assistant token"
+        }
+      }
+    },
+    "error": {
+      "cannot_connect": "Music Assistant could not be reached, or it refused the token."
+    },
+    "abort": {
+      "already_configured": "Kids Dashboard is already set up."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Favourite series",
+        "data": {
+          "featured": "Shown first, in this order"
+        }
+      }
+    }
+  }
+}
