@@ -16,8 +16,9 @@ running Kiosk Satellite.
 
 ## Install
 
-1. Copy `custom_components/kids_dashboard` into Home Assistant's `/config/custom_components/` (or run
-   `./deploy.sh --restart` with SSH access to Home Assistant) and restart Home Assistant.
+1. Build the card (`npm install`, `npm run build`; the repository has no built file), then copy
+   `custom_components/kids_dashboard` into Home Assistant's `/config/custom_components/` and restart Home
+   Assistant. Or run `./deploy.sh --restart` with SSH access to Home Assistant, which does all of it.
 2. **Settings → Devices & services → Add integration → Kids Dashboard**: Music Assistant's address (for the
    add-on, `http://homeassistant.local:8095` or the host's IP) and a long-lived token made in Music Assistant,
    ideally for a user of its own.

@@ -1,28 +1,37 @@
 import { LitElement, html } from 'lit'
 import { KidsDashboardApi } from './api.js'
 import { icons } from './icons.js'
+import { nowPlaying } from './now-playing.js'
 import { PlaybackController } from './playback.js'
 import { styles } from './styles.js'
+import { SwipeBackController } from './swipe.js'
 import { renderBook } from './views/book.js'
 import { renderGroup } from './views/group.js'
 import { renderHome } from './views/home.js'
-import { renderPlayerBar } from './views/player-bar.js'
 
 // kids-dashboard-card: a kids' room screen for Home Assistant. Its first part is the audiobooks ("Hörspiele"),
-// grouped by author as Music Assistant groups them, with a player bar at the bottom.
+// grouped by author as Music Assistant groups them. What plays now is shown by a floating media player around
+// it, such as Navbar Card's, which links back here with ?playing to open the book. A link with ?home shows
+// the overview, for a navbar button that should lead there even from an open book.
 //
 //   type: custom:kids-dashboard-card
 //   entity: media_player.kids_room   # the Music Assistant player it plays on
 //   title: Hörspiele                 # optional heading on the home page
 //   height: 100vh                    # optional: the card scrolls inside itself at this height
+//   inset_right: 120px               # optional: room on the right for a floating navbar
+//   inset_bottom: 100px              # optional: room at the bottom for a floating media player
 
 // New audiobooks, and the order of what played last, reach the home page this often.
 const LIBRARY_INTERVAL = 30000
 
+// Links to the card's view: ?playing opens the book that plays now, ?home the overview.
+const LINKS = ['playing', 'home']
+
 const HOME = { kind: 'home' }
 
-// A book in no group stands on its own: its group id is "b" and its own id (see the integration's to_book).
-const isSingle = (groupId) => groupId.startsWith('b')
+// A book in no group stands on its own: its group id is "single-" and its own id (see the integration's
+// to_book). A group's id is hex, so the prefix must not start with a hex digit.
+const isSingle = (groupId) => groupId.startsWith('single-')
 
 class KidsDashboardCard extends LitElement {
     static styles = styles
@@ -39,6 +48,7 @@ class KidsDashboardCard extends LitElement {
     #api = null
     #libraryTimer = null
     #playback = new PlaybackController(this, null)
+    #openPlayingWhenKnown = false
 
     constructor() {
         super()
@@ -47,6 +57,12 @@ class KidsDashboardCard extends LitElement {
         this.group = null
         this.book = null
         this.failed = false
+
+        // Registers itself with the card; the card never asks it anything.
+        new SwipeBackController(this, {
+            enabled: () => this.page.kind !== 'home',
+            onBack: () => this.#back(),
+        })
     }
 
     setConfig(config) {
@@ -56,8 +72,16 @@ class KidsDashboardCard extends LitElement {
 
         this.config = config
 
-        if (config.height) {
-            this.style.setProperty('--kids-dashboard-height', config.height)
+        const sizes = {
+            height: '--kids-dashboard-height',
+            inset_right: '--kids-dashboard-inset-right',
+            inset_bottom: '--kids-dashboard-inset-bottom',
+        }
+
+        for (const [key, property] of Object.entries(sizes)) {
+            if (config[key]) {
+                this.style.setProperty(property, config[key])
+            }
         }
     }
 
@@ -81,16 +105,28 @@ class KidsDashboardCard extends LitElement {
     connectedCallback() {
         super.connectedCallback()
         this.#libraryTimer = setInterval(() => this.#refreshHome(), LIBRARY_INTERVAL)
+
+        // Home Assistant keeps a view's cards when another view is shown, so a link from there finds the card
+        // either already connected or connecting again.
+        window.addEventListener('location-changed', this.#onLocationChanged)
+        this.#onLocationChanged()
     }
 
     disconnectedCallback() {
         super.disconnectedCallback()
         clearInterval(this.#libraryTimer)
+        window.removeEventListener('location-changed', this.#onLocationChanged)
     }
 
     updated(changed) {
         if (changed.has('page')) {
             this.renderRoot.querySelector('.content')?.scrollTo(0, 0)
+        }
+
+        // The first answer from the player, after a link asked for what plays now.
+        if (this.#openPlayingWhenKnown && this.#playback.state) {
+            this.#openPlayingWhenKnown = false
+            this.#openPlaying()
         }
     }
 
@@ -99,17 +135,12 @@ class KidsDashboardCard extends LitElement {
 
         return html`
             <ha-card>
-                ${this.#renderHeader(home)}
-
                 <div class="content ${home ? 'home' : ''}">
+                    ${this.#renderHeader(home)}
                     ${this.#renderPage()}
                 </div>
 
-                ${renderPlayerBar({
-                    playback: this.#playback,
-                    onOpen: () => this.#openPlaying(),
-                    onCommand: (action) => this.#command(action),
-                })}
+                <div class="swipe-back" aria-hidden="true">${icons.back}</div>
             </ha-card>
         `
     }
@@ -147,7 +178,7 @@ class KidsDashboardCard extends LitElement {
                 book: this.book,
                 playback: this.#playback,
                 onPlay: (uri, position) => this.#play(uri, position),
-                onRestart: (uri) => this.#command('restart', { uri }, 'playing'),
+                onRestart: (uri) => this.#restart(uri),
                 onToggle: () => this.#command('play_pause'),
             })
         }
@@ -180,10 +211,42 @@ class KidsDashboardCard extends LitElement {
         this.#show({ kind: 'group', id: groupId })
     }
 
+    /** Follows a link, and takes it off the address, so going back or reloading does not follow it again. */
+    #onLocationChanged = () => {
+        const url = new URL(window.location.href)
+        const link = LINKS.find((name) => url.searchParams.has(name))
+
+        if (!link) {
+            return
+        }
+
+        url.searchParams.delete(link)
+        history.replaceState(history.state, '', url)
+
+        if (link === 'home') {
+            this.#show(HOME)
+            this.renderRoot.querySelector('.content')?.scrollTo({ top: 0, behavior: 'smooth' })
+            return
+        }
+
+        if (!this.#playback.state) {
+            this.#openPlayingWhenKnown = true
+            return
+        }
+
+        this.#openPlaying()
+    }
+
+    /** Opens the book that plays now; on that book's own page, Now Playing instead. */
     #openPlaying() {
         const id = this.#playback.book?.id
 
-        if (!id || (this.page.kind === 'book' && this.page.id === id)) {
+        if (!id) {
+            return
+        }
+
+        if (this.page.kind === 'book' && this.page.id === id) {
+            nowPlaying.show()
             return
         }
 
@@ -239,11 +302,26 @@ class KidsDashboardCard extends LitElement {
 
     // Playback
 
-    /** Plays a book where it was left, or from a chapter's start when a position is given. */
+    /**
+     * Plays a book where it was left, or from a chapter's start when a position is given. A chapter picked
+     * means a place is looked for in the book, so Now Playing stays away and the book's page stays in view.
+     */
     #play(uri, position) {
         const args = position === undefined ? { uri } : { uri, position, from_position: true }
 
+        if (position === undefined) {
+            nowPlaying.asked()
+        } else {
+            nowPlaying.stayQuiet()
+        }
+
         return this.#command('play', args, 'playing')
+    }
+
+    #restart(uri) {
+        nowPlaying.asked()
+
+        return this.#command('restart', { uri }, 'playing')
     }
 
     #command(action, args = {}, expected = null) {

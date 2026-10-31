@@ -1,7 +1,7 @@
 """Constants for the Kids Dashboard integration."""
 
 DOMAIN = "kids_dashboard"
-VERSION = "0.4.2"
+VERSION = "0.7.9"
 
 CONF_URL = "url"
 CONF_TOKEN = "token"

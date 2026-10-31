@@ -7,7 +7,7 @@ export default defineConfig({
         outDir: 'custom_components/kids_dashboard/www',
         emptyOutDir: true,
         lib: {
-            entry: './src/kids-dashboard-card.js',
+            entry: './src/index.js',
             formats: ['es'],
             fileName: () => 'kids-dashboard-card.js',
         },

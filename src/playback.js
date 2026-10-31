@@ -17,14 +17,18 @@ export class PlaybackController {
 
     #host
     #api
+    #active
+    #at = 0
     #timer = null
     #asked = 0
     #shown = 0
     #expected = null
 
-    constructor(host, api) {
+    /** active says when the player is worth asking: a card that is mostly hidden asks only while shown. */
+    constructor(host, api, active = () => true) {
         this.#host = host
         this.#api = api
+        this.#active = active
         host.addController(this)
     }
 
@@ -38,6 +42,15 @@ export class PlaybackController {
 
     get playing() {
         return this.state?.state === 'playing'
+    }
+
+    /** Where the player is now: its last answer, moved on by the time since while it plays. */
+    get elapsed() {
+        if (!this.state) {
+            return 0
+        }
+
+        return this.state.elapsed + (this.playing ? (Date.now() - this.#at) / 1000 : 0)
     }
 
     hostConnected() {
@@ -64,14 +77,14 @@ export class PlaybackController {
 
     async command(action, args = {}) {
         try {
-            await this.#api?.command(action, args, this.state?.external)
+            await this.#api?.command(action, args)
         } finally {
             this.poll()
         }
     }
 
     async poll() {
-        if (!this.#api || document.hidden) {
+        if (!this.#api || document.hidden || !this.#active()) {
             return
         }
 
@@ -83,6 +96,7 @@ export class PlaybackController {
         }
 
         this.#shown = asked
+        this.#at = Date.now()
         this.state = this.#heldUntilConfirmed(state)
         this.#host.requestUpdate()
     }

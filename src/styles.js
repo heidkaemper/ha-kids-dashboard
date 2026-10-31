@@ -1,20 +1,28 @@
 import { css } from 'lit'
 
-// Colors come from the Home Assistant theme, so the card follows light and dark mode. The card is as tall as
-// the screen and scrolls inside itself: the header stays at the top and the player bar at the bottom.
+// Colors come from the Home Assistant theme, so the card follows light and dark mode. The card fills the screen
+// on the view's own background and scrolls inside itself, the header along with the rest. A navbar and a media
+// player float on top of it: the insets keep room for them, and the list scrolls on underneath.
 export const styles = css`
     :host {
         display: block;
         height: var(--kids-dashboard-height, 100vh);
+        /* In its vertical stack, the navbar and Now Playing after it take no room but still get the stack's gap
+           before them, and the screen would scroll by that much: the card gives the two gaps back. */
+        margin-bottom: calc(-2 * var(--vertical-stack-card-gap, var(--stack-card-gap, 8px)));
     }
 
     ha-card {
+        position: relative;
         display: flex;
         flex-direction: column;
         height: 100%;
         overflow: hidden;
         padding: 0;
-        background: var(--ha-card-background, var(--card-background-color));
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+        background: none;
     }
 
     svg {
@@ -42,7 +50,7 @@ export const styles = css`
         align-items: center;
         gap: 12px;
         min-height: 48px;
-        padding: 12px 16px 6px;
+        padding-bottom: 12px;
     }
 
     header h1 {
@@ -69,10 +77,14 @@ export const styles = css`
     .content {
         flex: 1;
         min-height: 0;
-        padding: 4px 16px 18px;
+        padding: 12px calc(16px + var(--kids-dashboard-inset-right, 0px)) calc(18px + var(--kids-dashboard-inset-bottom, 0px)) 16px;
         overflow-y: auto;
         overscroll-behavior: contain;
         scrollbar-width: none;
+        /* Sideways is the swipe back's (swipe.js), up and down the scrolling's. */
+        touch-action: pan-y;
+        transform: translateX(var(--kids-dashboard-swipe-shift, 0px));
+        transition: transform 220ms ease;
     }
 
     .content::-webkit-scrollbar {
@@ -81,6 +93,35 @@ export const styles = css`
 
     .content.home {
         padding-top: 16px;
+    }
+
+    /* The swipe back: the page follows the finger, and an arrow comes in once letting go goes back. */
+
+    :host([swiping]) .content {
+        transition: none;
+    }
+
+    .swipe-back {
+        box-sizing: border-box;
+        position: absolute;
+        top: 50%;
+        left: 0;
+        width: 48px;
+        height: 48px;
+        padding: 12px;
+        border-radius: 50%;
+        background: var(--secondary-background-color);
+        color: var(--primary-text-color);
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+        opacity: 0;
+        transform: translate(-60px, -50%);
+        transition: transform 180ms ease, opacity 180ms ease;
+        pointer-events: none;
+    }
+
+    :host([armed]) .swipe-back {
+        opacity: 1;
+        transform: translate(16px, -50%);
     }
 
     .empty {
@@ -287,87 +328,236 @@ export const styles = css`
         font-size: 14px;
         font-style: normal;
     }
+`
 
-    /* The player bar */
-
-    .player {
-        display: flex;
-        flex: none;
-        align-items: center;
-        gap: 14px;
-        padding: 8px 16px;
-        border-top: 1px solid var(--divider-color);
-        background: var(--secondary-background-color);
-        box-shadow: 0 -6px 16px rgba(0, 0, 0, 0.25);
+// The clock card: the backdrop fills the card, the clock sits in the middle of the screen, whatever floats on it.
+// White text with a soft shadow reads on both the dark and the light shapes.
+export const clockStyles = css`
+    :host {
+        display: block;
+        height: var(--kids-dashboard-height, 100vh);
+        /* In its vertical stack, the navbar and Now Playing after it take no room but still get the stack's gap
+           before them, and the screen would scroll by that much: the card gives the two gaps back. */
+        margin-bottom: calc(-2 * var(--vertical-stack-card-gap, var(--stack-card-gap, 8px)));
     }
 
-    .now-playing {
-        display: flex;
-        flex: 1;
-        align-items: center;
-        gap: 14px;
-        min-width: 0;
+    ha-card {
+        position: relative;
+        height: 100%;
+        overflow: hidden;
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        box-shadow: none;
+        background: none;
     }
 
-    .now-playing img {
-        flex: none;
-        width: 64px;
-        height: 64px;
-        border-radius: 12px;
+    .backdrop {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
         object-fit: cover;
     }
 
-    .now-playing .text {
-        flex: 1;
-        min-width: 0;
+    .shade {
+        background: rgba(0, 0, 0, 0.18);
     }
 
-    .now-playing .title,
-    .now-playing .detail {
+    .clock {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        color: #fff;
+        text-shadow: 0 2px 12px rgba(0, 0, 0, 0.45);
+    }
+
+    .time {
+        font-size: 140px;
+        font-weight: 400;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -2px;
+    }
+
+    .date {
+        margin-top: -8px;
+        font-size: 24px;
+        font-weight: 500;
+    }
+`
+
+// Now Playing: fixed over the whole screen, above the navbar and its player (Navbar Card's layers reach 901).
+// The cover blurred and darkened behind it keeps the colors of what plays.
+export const nowPlayingStyles = css`
+    :host {
+        display: block;
+    }
+
+    svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        fill: currentColor;
+    }
+
+    button {
+        padding: 0;
+        border: 0;
+        background: none;
+        color: inherit;
+        cursor: pointer;
+    }
+
+    .overlay {
+        position: fixed;
+        inset: 0;
+        z-index: 1000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px 40px;
         overflow: hidden;
+        background: #111;
+        color: #fff;
+    }
+
+    .blur {
+        position: absolute;
+        inset: -40px;
+        width: calc(100% + 80px);
+        height: calc(100% + 80px);
+        object-fit: cover;
+        filter: blur(40px) brightness(0.4);
+    }
+
+    .close {
+        position: absolute;
+        top: 16px;
+        right: 16px;
+        width: 40px;
+        height: 40px;
+        padding: 10px;
+        border-radius: 50%;
+        background: rgba(255, 255, 255, 0.12);
+    }
+
+    /* Two columns lined up on the cover's height: its middle, its foot, and the title row below it. */
+    .layout {
+        position: relative;
+        display: grid;
+        grid-template-columns: 260px 360px;
+        grid-template-rows: 260px auto;
+        column-gap: 56px;
+        align-items: start;
+    }
+
+    .cover {
+        grid-area: 1 / 1;
+        overflow: hidden;
+        border-radius: 16px;
+        background: rgba(255, 255, 255, 0.1);
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+    }
+
+    .cover,
+    .cover img {
+        display: block;
+        width: 260px;
+        height: 260px;
+        object-fit: cover;
+    }
+
+    .text {
+        grid-area: 2 / 1;
+        min-width: 0;
+        padding-top: 14px;
+        text-align: center;
+    }
+
+    .title {
+        display: -webkit-box;
+        overflow: hidden;
+        font-size: 20px;
+        font-weight: 600;
+        line-height: 1.25;
+        -webkit-box-orient: vertical;
+        -webkit-line-clamp: 2;
+    }
+
+    .detail {
+        margin-top: 4px;
+        overflow: hidden;
+        color: rgba(255, 255, 255, 0.7);
+        font-size: 15px;
         text-overflow: ellipsis;
         white-space: nowrap;
     }
 
-    .now-playing .title {
-        color: var(--primary-text-color);
-        font-size: 18px;
-        font-weight: 600;
+    .controls {
+        display: flex;
+        grid-area: 1 / 2;
+        align-items: center;
+        align-self: center;
+        justify-content: center;
+        gap: 28px;
     }
 
-    .now-playing .detail {
-        color: var(--secondary-text-color);
+    .timeline {
+        grid-area: 1 / 2;
+        align-self: end;
+        width: 100%;
+        height: 32px;
+        margin: 0 0 -12px;
+        background: none;
+        cursor: pointer;
+        -webkit-appearance: none;
+        appearance: none;
+    }
+
+    .timeline::-webkit-slider-runnable-track {
+        height: 8px;
+        border-radius: 4px;
+        background: linear-gradient(to right, #fff var(--progress), rgba(255, 255, 255, 0.25) var(--progress));
+    }
+
+    .timeline::-webkit-slider-thumb {
+        width: 24px;
+        height: 24px;
+        margin-top: -8px;
+        border-radius: 50%;
+        background: #fff;
+        box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+        -webkit-appearance: none;
+        appearance: none;
+    }
+
+    .times {
+        display: flex;
+        grid-area: 2 / 2;
+        justify-content: space-between;
+        padding-top: 16px;
+        color: rgba(255, 255, 255, 0.7);
         font-size: 14px;
-    }
-
-    .now-playing .bar {
-        height: 5px;
-        margin-top: 7px;
-        overflow: hidden;
-        border-radius: 3px;
-        background: var(--divider-color);
-    }
-
-    .now-playing .bar i {
-        display: block;
-        height: 100%;
-        background: var(--primary-color);
+        font-variant-numeric: tabular-nums;
     }
 
     .control {
-        flex: none;
-        width: 48px;
-        height: 48px;
-        padding: 12px;
+        width: 64px;
+        height: 64px;
+        padding: 16px;
         border-radius: 50%;
-        color: var(--primary-text-color);
+        background: rgba(255, 255, 255, 0.12);
     }
 
     .control.main {
-        width: 58px;
-        height: 58px;
-        padding: 15px;
-        background: var(--primary-color);
-        color: var(--text-primary-color, #fff);
+        width: 96px;
+        height: 96px;
+        padding: 26px;
+        background: #fff;
+        color: #111;
     }
 `

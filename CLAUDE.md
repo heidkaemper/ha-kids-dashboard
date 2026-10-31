@@ -7,8 +7,10 @@ in a child's room (an Echo Show 5 with Kiosk Satellite, 960×480), so it has to 
 
 ## Layout
 
-- `src/` is the card's source. `npm run build` bundles it into `custom_components/kids_dashboard/www/`.
-  The built file is committed, so the integration installs without a build.
+- `src/` is the cards' source: `kids-dashboard-card` (the audiobooks), `kids-clock-card` (the home screen) and
+  `kids-now-playing-card` (over everything while something plays), all bundled from `src/index.js`. `npm run build` bundles them into `custom_components/kids_dashboard/www/`.
+  The built file is not committed (`www/` is in `.gitignore`): build before copying the integration anywhere;
+  `deploy.sh` does.
 - `custom_components/kids_dashboard/` is the integration: it talks to Music Assistant, answers the card over
   Home Assistant's websocket (`kids_dashboard/*`), serves the card and the covers, and adds the card to the
   dashboard resources by itself.

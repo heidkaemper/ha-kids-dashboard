@@ -11,13 +11,14 @@ from datetime import timedelta
 import logging
 from pathlib import Path
 import re
+import time
 
 from aiohttp import web
 from homeassistant.components import websocket_api
 from homeassistant.components.http import HomeAssistantView, StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EVENT_HOMEASSISTANT_STARTED
-from homeassistant.core import CoreState, HomeAssistant, callback
+from homeassistant.const import EVENT_CALL_SERVICE, EVENT_HOMEASSISTANT_STARTED
+from homeassistant.core import CoreState, Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
@@ -95,7 +96,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: KidsDashboardConfigEntry
 
     entry.async_on_unload(async_track_time_interval(hass, tick, timedelta(seconds=REFRESH_INTERVAL)))
     entry.async_on_unload(entry.add_update_listener(_options_changed))
+    entry.async_on_unload(
+        hass.bus.async_listen(EVENT_CALL_SERVICE, _chapter_skip(hass, lib), event_filter=_is_track_skip)
+    )
     return True
+
+
+# A media player's next button (Navbar Card's, Home Assistant's own) skips a queue item, and an audiobook is
+# one item: Music Assistant does nothing. So while an audiobook plays it moves a chapter on. Not the previous
+# button: there Music Assistant starts its one item over itself, and a chapter seek would race with that.
+TRACK_SKIPS = {"media_next_track": "chapter_next"}
+
+
+@callback
+def _is_track_skip(event_data) -> bool:
+    return event_data.get("domain") == "media_player" and event_data.get("service") in TRACK_SKIPS
+
+
+def _chapter_skip(hass: HomeAssistant, lib: Library):
+    async def skip(event: Event) -> None:
+        entity_ids = event.data.get("service_data", {}).get("entity_id", [])
+        if isinstance(entity_ids, str):
+            entity_ids = [entity_ids]
+        for entity_id in entity_ids:
+            try:
+                # Does nothing where no audiobook is on the player: there the skip is Music Assistant's.
+                await lib.command(_player_id(hass, entity_id), TRACK_SKIPS[event.data["service"]])
+            except MusicAssistantError:
+                continue
+
+    return skip
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: KidsDashboardConfigEntry) -> bool:
@@ -204,11 +234,16 @@ async def ws_command(hass, lib: Library, msg):
 
 PROXY_ID = re.compile(r"^[0-9a-f]{16,128}$")
 
+# A kept cover is asked for again in the background once it is this old, in seconds, and a browser keeps one
+# this long: a picture changed in Audiobookshelf shows within about a day.
+COVER_RENEW = 60 * 60
+COVER_MAX_AGE = 24 * 60 * 60
+
 
 class CoverView(HomeAssistantView):
-    """The covers, from Music Assistant's image proxy, kept on disk: they don't change, and a page of
-    them comes up much quicker from here. Open without a login, as an <img> sends none; it serves
-    nothing but cover art, by an id only Music Assistant hands out."""
+    """The covers, from Music Assistant's image proxy, kept on disk: a page of them comes up much quicker
+    from here. Open without a login, as an <img> sends none; it serves nothing but cover art, by an id only
+    Music Assistant hands out."""
 
     url = IMAGE_URL + "/{proxy_id}"
     name = "api:kids_dashboard:img"
@@ -223,23 +258,37 @@ class CoverView(HomeAssistantView):
         if size not in ("160", "256", "512") or not PROXY_ID.match(proxy_id):
             return web.Response(status=404)
         path = self.cache / f"{proxy_id}-{size}.jpg"
-        data = await self.hass.async_add_executor_job(_read, path)
+        data, age = await self.hass.async_add_executor_job(_read, path)
         if data is None:
-            lib = _library(self.hass)
-            data = await lib.ma.image(proxy_id, int(size)) if lib else None
+            data = await self._fetch(path, proxy_id, int(size))
             if data is None:
                 return web.Response(status=404)
-            await self.hass.async_add_executor_job(_write, path, data)
+        elif age > COVER_RENEW:
+            # A picture can change at the same address (Audiobookshelf's cover or author picture): the kept
+            # one is served at once, and the current one is fetched for next time.
+            self.hass.async_create_background_task(
+                self._fetch(path, proxy_id, int(size)), f"kids dashboard cover {proxy_id}"
+            )
         return web.Response(
-            body=data, content_type="image/jpeg", headers={"Cache-Control": "public, max-age=604800"}
+            body=data,
+            content_type="image/jpeg",
+            headers={"Cache-Control": f"public, max-age={COVER_MAX_AGE}"},
         )
 
+    async def _fetch(self, path: Path, proxy_id: str, size: int) -> bytes | None:
+        lib = _library(self.hass)
+        data = await lib.ma.image(proxy_id, size) if lib else None
+        if data is not None:
+            await self.hass.async_add_executor_job(_write, path, data)
+        return data
 
-def _read(path: Path) -> bytes | None:
+
+def _read(path: Path) -> tuple[bytes | None, float]:
+    """A kept cover and how old it is, in seconds."""
     try:
-        return path.read_bytes()
+        return path.read_bytes(), time.time() - path.stat().st_mtime
     except OSError:
-        return None
+        return None, 0
 
 
 def _write(path: Path, data: bytes) -> None:

@@ -66,8 +66,17 @@ class MusicAssistant:
             return None
 
 
+# The group id of a book in no group is its own id after this. A group's id is hex, so this must not
+# start with a hex digit.
+SINGLE = "single-"
+
+
 def series_id(name: str) -> str:
     return hashlib.sha1(name.encode()).hexdigest()[:12]
+
+
+def _authors(item: dict) -> list[str]:
+    return [a["name"] for a in item.get("authors") or []]
 
 
 def to_book(item: dict) -> dict:
@@ -86,7 +95,7 @@ def to_book(item: dict) -> dict:
         "number": "",
         "author": authors[0]["name"] if authors else "",
         "series": "",
-        "series_id": "b" + item["item_id"],
+        "series_id": SINGLE + item["item_id"],
         "collection": "",
         "cover": f"{IMAGE_URL}/{proxy}" if proxy else "",
         "duration": item.get("duration") or 0,
@@ -137,7 +146,7 @@ class Library:
     async def refresh(self) -> None:
         async with self._lock:
             items = await self.ma.command("music/audiobooks/library_items", limit=5000)
-            missing = [it["item_id"] for it in items if it["item_id"] not in self.details]
+            missing = [it["item_id"] for it in items if self._outdated(it)]
             if missing:
                 sem = asyncio.Semaphore(6)
 
@@ -151,7 +160,7 @@ class Library:
                             _LOGGER.warning("Details of audiobook %s: %s", item_id, err)
 
                 await asyncio.gather(*(fetch(i) for i in missing))
-                _LOGGER.debug("Read the details of %d new audiobooks", len(missing))
+                _LOGGER.debug("Read the details of %d new or changed audiobooks", len(missing))
             try:
                 artists = await self.ma.command("music/artists/library_items", limit=5000)
                 self.author_images = {
@@ -163,6 +172,15 @@ class Library:
                 _LOGGER.warning("Reading the authors' pictures failed: %s", err)
             self._build(items)
             self.read_at = time.monotonic()
+
+    def _outdated(self, item: dict) -> bool:
+        """Whether a book's details are still to be read: new ones, and ones whose name or authors have
+        changed since. Audiobookshelf names a book after its files at first and after its real title once
+        it is matched, and the list has no other sign of that."""
+        known = self.details.get(item["item_id"])
+        if known is None:
+            return True
+        return (known["name"], _authors(known)) != (item["name"], _authors(item))
 
     def _build(self, items: list[dict]) -> None:
         by_id: dict[str, dict] = {}
@@ -247,7 +265,7 @@ class Library:
         return book
 
     async def state(self, player_id: str) -> dict:
-        """What the player bar shows: the book, where in it, and which chapter."""
+        """What plays: the book, where in it, and which chapter."""
         queue = await self.ma.command("player_queues/get", queue_id=player_id)
         out: dict[str, Any] = {
             "state": (queue or {}).get("state", "idle"),
