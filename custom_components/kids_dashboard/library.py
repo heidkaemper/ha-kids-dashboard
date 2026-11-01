@@ -19,7 +19,7 @@ import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import IMAGE_URL
+from .const import HEARD_AFTER, IMAGE_URL, RECENT_BOOKS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -131,7 +131,6 @@ class Library:
     chapters) are read once."""
 
     ma: MusicAssistant
-    featured: list[str] = field(default_factory=list)
     series: list[dict] = field(default_factory=list)
     by_id: dict[str, dict] = field(default_factory=dict)
     books: dict[str, dict] = field(default_factory=dict)
@@ -139,7 +138,11 @@ class Library:
     author_images: dict[str, str] = field(default_factory=dict)
     # When each group last played on each player: {player_id: {series_id: unix time}}, kept by Home Assistant.
     recent: dict[str, dict[str, float]] = field(default_factory=dict)
+    # When each book last played on each player, the latest RECENT_BOOKS: {player_id: {book_id: unix time}}.
+    heard: dict[str, dict[str, float]] = field(default_factory=dict)
     on_recent: Callable[[], None] | None = None
+    # Which book plays on each player now, and since when.
+    _playing: dict[str, tuple[str, float]] = field(default_factory=dict)
     read_at: float = 0
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
@@ -203,7 +206,6 @@ class Library:
                     "sub": "",
                     "covers": [],
                     "count": 0,
-                    "featured": False,
                     "single": "",
                     "books": [],
                 }
@@ -212,10 +214,9 @@ class Library:
                 by_id[s["id"]] = s
                 order.append(s)
             s["books"].append(book)
-        rank = {name: i for i, name in enumerate(self.featured, 1)}
         for s in order:
             s["books"].sort(key=lambda b: b["sort"])
-            s["count"], s["featured"] = len(s["books"]), s["name"] in rank
+            s["count"] = len(s["books"])
             # A group's face is its author's picture in Music Assistant, else its first real episode's cover
             # (a "0" is a special, like a live show).
             if (proxy := self.author_images.get(s["name"])) and not s["single"]:
@@ -224,7 +225,7 @@ class Library:
                 s["covers"] = [b["cover"] for b in s["books"] if b["cover"] and b["number"] != "0"][:1] or [
                     b["cover"] for b in s["books"][:1] if b["cover"]
                 ]
-        order.sort(key=lambda s: (0, rank[s["name"]], "") if s["name"] in rank else (1, 0, s["name"].lower()))
+        order.sort(key=lambda s: s["name"].lower())
         self.series, self.by_id, self.books = order, by_id, books
 
     def chapters(self, item_id: str) -> list[dict]:
@@ -232,19 +233,35 @@ class Library:
 
     def overview(self, player_id: str | None = None) -> list[dict]:
         """The home page's groups. For a player, the groups it played lately come first, the latest first; the
-        rest keep the library's order (favourites, then by name)."""
+        rest by name."""
         played = self.recent.get(player_id or "", {})
         order = sorted(self.series, key=lambda s: -played.get(s["id"], 0))
         return [{k: v for k, v in s.items() if k != "books"} for s in order]
 
-    def played(self, player_id: str, series_id: str) -> None:
-        """Note that a group plays on a player now, at most once a minute per group."""
-        groups = self.recent.setdefault(player_id, {})
+    def played(self, player_id: str, book: dict) -> None:
+        """Note that a book plays on a player now. Once it has played there for HEARD_AFTER without a break,
+        it and its group count as heard there, noted at most once a minute."""
         now = time.time()
-        if now - groups.get(series_id, 0) >= 60:
-            groups[series_id] = now
-            if self.on_recent:
-                self.on_recent()
+        playing = self._playing.get(player_id)
+        if playing is None or playing[0] != book["id"]:
+            self._playing[player_id] = (book["id"], now)
+            return
+        books = self.heard.setdefault(player_id, {})
+        if now - playing[1] < HEARD_AFTER or now - books.get(book["id"], 0) < 60:
+            return
+
+        books[book["id"]] = now
+        for old in sorted(books, key=books.get)[:-RECENT_BOOKS]:
+            del books[old]
+        self.recent.setdefault(player_id, {})[book["series_id"]] = now
+        if self.on_recent:
+            self.on_recent()
+
+    def recently_heard(self, player_id: str) -> list[dict]:
+        """The books heard lately on a player, the latest first; ones gone from the library are left out."""
+        heard = self.heard.get(player_id, {})
+        latest = sorted(heard, key=heard.get, reverse=True)
+        return [{k: v for k, v in self.books[i].items() if k != "sort"} for i in latest if i in self.books]
 
     def collection(self, sid: str) -> dict | None:
         s = self.by_id.get(sid)
@@ -277,7 +294,10 @@ class Library:
         }
         current = (queue or {}).get("current_item") or {}
         item = current.get("media_item")
+        if out["state"] != "playing":
+            self._playing.pop(player_id, None)
         if not item or item.get("media_type") != "audiobook":
+            self._playing.pop(player_id, None)
             return out
         known = self.books.get(item["item_id"])
         book = dict(known) if known else to_book(item)
@@ -286,7 +306,7 @@ class Library:
         if out["state"] == "playing" and queue.get("elapsed_time_last_updated"):
             elapsed += time.time() - queue["elapsed_time_last_updated"]
         if out["state"] == "playing":
-            self.played(player_id, book["series_id"])
+            self.played(player_id, book)
         chapters = self.chapters(item["item_id"])
         current_chapter = None
         for c in chapters:

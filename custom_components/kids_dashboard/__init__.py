@@ -24,7 +24,7 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 import voluptuous as vol
 
-from .const import CARD_URL, CONF_FEATURED, CONF_TOKEN, CONF_URL, DOMAIN, IMAGE_URL, REFRESH_INTERVAL, VERSION
+from .const import CARD_URL, CONF_TOKEN, CONF_URL, DOMAIN, IMAGE_URL, REFRESH_INTERVAL, VERSION
 from .library import Library, MusicAssistant, MusicAssistantError
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,7 +40,7 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         [StaticPathConfig(CARD_URL, str(Path(__file__).parent / "www" / "kids-dashboard-card.js"), False)]
     )
     hass.http.register_view(CoverView(hass))
-    for command in (ws_library, ws_series, ws_book, ws_state, ws_command):
+    for command in (ws_library, ws_recent, ws_series, ws_book, ws_state, ws_command):
         websocket_api.async_register_command(hass, command)
 
     async def add_resource(_event=None) -> None:
@@ -77,15 +77,21 @@ async def _ensure_resource(hass: HomeAssistant) -> None:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: KidsDashboardConfigEntry) -> bool:
-    lib = Library(
-        MusicAssistant(hass, entry.data[CONF_URL], entry.data[CONF_TOKEN]),
-        featured=list(entry.options.get(CONF_FEATURED, [])),
-    )
+    lib = Library(MusicAssistant(hass, entry.data[CONF_URL], entry.data[CONF_TOKEN]))
     # What played last on each player outlives restarts, so each screen keeps its own order. Taken over once
     # from the integration's earlier name, Hörspiele.
     store: Store[dict] = Store(hass, 1, f"{DOMAIN}.recent")
     lib.recent = await store.async_load() or await Store(hass, 1, "hoerspiele.recent").async_load() or {}
-    lib.on_recent = lambda: store.async_delay_save(lambda: lib.recent, 30)
+    # The books for "Zuletzt", in a store of their own: the groups' store stays as it was.
+    heard: Store[dict] = Store(hass, 1, f"{DOMAIN}.heard")
+    lib.heard = await heard.async_load() or {}
+
+    @callback
+    def save_recent() -> None:
+        store.async_delay_save(lambda: lib.recent, 30)
+        heard.async_delay_save(lambda: lib.heard, 30)
+
+    lib.on_recent = save_recent
     entry.runtime_data = lib
     # The first read can take a while (every audiobook's details): the card waits for it,
     # Home Assistant does not.
@@ -95,7 +101,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: KidsDashboardConfigEntry
         await _refresh(lib)
 
     entry.async_on_unload(async_track_time_interval(hass, tick, timedelta(seconds=REFRESH_INTERVAL)))
-    entry.async_on_unload(entry.add_update_listener(_options_changed))
     entry.async_on_unload(
         hass.bus.async_listen(EVENT_CALL_SERVICE, _chapter_skip(hass, lib), event_filter=_is_track_skip)
     )
@@ -130,10 +135,6 @@ def _chapter_skip(hass: HomeAssistant, lib: Library):
 
 async def async_unload_entry(hass: HomeAssistant, entry: KidsDashboardConfigEntry) -> bool:
     return True
-
-
-async def _options_changed(hass: HomeAssistant, entry: KidsDashboardConfigEntry) -> None:
-    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def _refresh(lib: Library) -> None:
@@ -182,6 +183,15 @@ def _handler(fn):
 @_handler
 async def ws_library(hass, lib: Library, msg):
     return lib.overview(_player_id(hass, msg["entity_id"]) if msg.get("entity_id") else None)
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): "kids_dashboard/recent", vol.Required("entity_id"): str}
+)
+@websocket_api.async_response
+@_handler
+async def ws_recent(hass, lib: Library, msg):
+    return lib.recently_heard(_player_id(hass, msg["entity_id"]))
 
 
 @websocket_api.websocket_command(

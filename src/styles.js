@@ -169,6 +169,20 @@ export const styles = css`
         object-fit: cover;
     }
 
+    /* A tile of one color with an icon, where there is no picture: "Zuletzt" */
+    .cover.plain {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: var(--primary-color);
+        color: var(--text-primary-color, #fff);
+    }
+
+    .cover.plain svg {
+        width: 46%;
+        height: 46%;
+    }
+
     .name {
         display: -webkit-box;
         overflow: hidden;
@@ -219,6 +233,34 @@ export const styles = css`
         display: block;
         height: 100%;
         background: var(--primary-color);
+    }
+
+    /* A list: what was heard lately, one book per row */
+
+    .list {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .row {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 8px;
+        border-radius: var(--ha-card-border-radius, 12px);
+        background: var(--secondary-background-color);
+    }
+
+    .row .cover {
+        flex: none;
+        width: 64px;
+        border-radius: 8px;
+        box-shadow: none;
+    }
+
+    .row .name {
+        font-size: 18px;
     }
 
     /* A book */

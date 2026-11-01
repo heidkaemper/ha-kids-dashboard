@@ -8,6 +8,7 @@ import { SwipeBackController } from './swipe.js'
 import { renderBook } from './views/book.js'
 import { renderGroup } from './views/group.js'
 import { renderHome } from './views/home.js'
+import { renderRecent } from './views/recent.js'
 
 // kids-dashboard-card: a kids' room screen for Home Assistant. Its first part is the audiobooks ("Hörspiele"),
 // grouped by author as Music Assistant groups them. What plays now is shown by a floating media player around
@@ -39,6 +40,7 @@ class KidsDashboardCard extends LitElement {
     static properties = {
         page: { state: true },
         groups: { state: true },
+        recent: { state: true },
         group: { state: true },
         book: { state: true },
         failed: { state: true },
@@ -54,6 +56,7 @@ class KidsDashboardCard extends LitElement {
         super()
         this.page = HOME
         this.groups = []
+        this.recent = []
         this.group = null
         this.book = null
         this.failed = false
@@ -152,6 +155,7 @@ class KidsDashboardCard extends LitElement {
 
         const title = {
             home: this.config.title,
+            recent: 'Zuletzt',
             group: this.group?.series.name,
             book: this.book?.series || this.book?.author || 'Hörspiel',
         }[this.page.kind]
@@ -167,6 +171,13 @@ class KidsDashboardCard extends LitElement {
     #renderPage() {
         if (this.failed) {
             return html`<div class="empty">Die Hörspiele sind gerade nicht erreichbar. Bitte gleich noch einmal versuchen.</div>`
+        }
+
+        if (this.page.kind === 'recent') {
+            return renderRecent({
+                books: this.recent,
+                onOpenBook: (id) => this.#show({ kind: 'book', id, from: 'recent' }),
+            })
         }
 
         if (this.page.kind === 'group' && this.group) {
@@ -186,6 +197,8 @@ class KidsDashboardCard extends LitElement {
         if (this.page.kind === 'home') {
             return renderHome({
                 groups: this.groups,
+                recent: this.recent,
+                onOpenRecent: () => this.#show({ kind: 'recent' }),
                 onOpenGroup: (id) => this.#show({ kind: 'group', id }),
                 onOpenBook: (id) => this.#show({ kind: 'book', id }),
             })
@@ -199,9 +212,15 @@ class KidsDashboardCard extends LitElement {
     /**
      * Back goes one level up, not to the page seen before: from a book to its group, from a group home. A book
      * opened from the player bar on another book's page goes back to its own group, not to that other book.
+     * Only a book opened from "Zuletzt" goes back there, as that list is where it was looked for.
      */
     #back() {
         const groupId = this.book?.series_id
+
+        if (this.page.from === 'recent') {
+            this.#show({ kind: 'recent' })
+            return
+        }
 
         if (this.page.kind !== 'book' || !groupId || isSingle(groupId)) {
             this.#show(HOME)
@@ -277,8 +296,14 @@ class KidsDashboardCard extends LitElement {
                 this.group = await this.#api.group(this.page.id)
             } else if (this.page.kind === 'book') {
                 this.book = await this.#api.book(this.page.id)
+            } else if (this.page.kind === 'recent') {
+                this.recent = await this.#api.recent()
             } else {
-                this.groups = await this.#api.library()
+                // Without "Zuletzt" the home page still works.
+                [this.groups, this.recent] = await Promise.all([
+                    this.#api.library(),
+                    this.#api.recent().catch(() => []),
+                ])
             }
 
             this.failed = false
@@ -287,16 +312,23 @@ class KidsDashboardCard extends LitElement {
         }
     }
 
-    /** New audiobooks and a new order of what played last; Lit redraws only what changed. */
+    /** New audiobooks, a new order of what played last and what was heard; Lit redraws only what changed. */
     async #refreshHome() {
         if (this.page.kind !== 'home' || !this.#api) {
             return
         }
 
-        const groups = await this.#api.library().catch(() => null)
+        const [groups, recent] = await Promise.all([
+            this.#api.library().catch(() => null),
+            this.#api.recent().catch(() => null),
+        ])
 
         if (groups && JSON.stringify(groups) !== JSON.stringify(this.groups)) {
             this.groups = groups
+        }
+
+        if (recent && JSON.stringify(recent) !== JSON.stringify(this.recent)) {
+            this.recent = recent
         }
     }
 

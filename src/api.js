@@ -10,6 +10,11 @@ export class KidsDashboardApi {
         return this.call('library', { entity_id: this.entityId })
     }
 
+    /** The books heard lately on this screen's player, the latest first. */
+    recent() {
+        return this.call('recent', { entity_id: this.entityId })
+    }
+
     group(seriesId) {
         return this.call('series', { series_id: seriesId })
     }

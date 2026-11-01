@@ -16,15 +16,5 @@
     "abort": {
       "already_configured": "Kids Dashboard is already set up."
     }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Favourite series",
-        "data": {
-          "featured": "Shown first, in this order"
-        }
-      }
-    }
   }
 }

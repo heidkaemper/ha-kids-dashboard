@@ -16,15 +16,5 @@
     "abort": {
       "already_configured": "Kids Dashboard ist schon eingerichtet."
     }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Lieblingsserien",
-        "data": {
-          "featured": "Werden zuerst gezeigt, in dieser Reihenfolge"
-        }
-      }
-    }
   }
 }
