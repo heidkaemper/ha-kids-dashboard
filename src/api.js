@@ -1,9 +1,11 @@
 // Everything the card asks of Home Assistant: the Kids Dashboard integration over the websocket.
 
 export class KidsDashboardApi {
-    constructor(hass, entityId) {
+    /** profile names the child whose Music Assistant user is asked; without one, the integration's first. */
+    constructor(hass, entityId, profile) {
         this.hass = hass
         this.entityId = entityId
+        this.profile = profile
     }
 
     library() {
@@ -32,7 +34,24 @@ export class KidsDashboardApi {
         return this.call('command', { entity_id: this.entityId, action, ...args })
     }
 
-    call(type, args) {
-        return this.hass.callWS({ type: `kids_dashboard/${type}`, ...args })
+    /** The liked podcasts, and how many episodes the two lists hold. */
+    podcasts() {
+        return this.call('podcasts')
+    }
+
+    /** fresh: false takes the episodes as the integration last read them, without asking Music Assistant. */
+    podcast(podcastId, fresh = true) {
+        return this.call('podcast', { podcast_id: podcastId, fresh })
+    }
+
+    /** "recent" for Zuletzt gehört, "latest" for Kürzlich aktualisiert. */
+    episodes(list) {
+        return this.call('episodes', { list })
+    }
+
+    call(type, args = {}) {
+        const profile = this.profile ? { profile: this.profile } : {}
+
+        return this.hass.callWS({ type: `kids_dashboard/${type}`, ...profile, ...args })
     }
 }

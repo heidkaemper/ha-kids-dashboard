@@ -3,6 +3,7 @@ import { KidsDashboardApi } from './api.js'
 import { icons } from './icons.js'
 import { nowPlaying } from './now-playing.js'
 import { PlaybackController } from './playback.js'
+import { applySizes } from './sizes.js'
 import { styles } from './styles.js'
 import { SwipeBackController } from './swipe.js'
 import { renderBook } from './views/book.js'
@@ -17,6 +18,7 @@ import { renderRecent } from './views/recent.js'
 //
 //   type: custom:kids-dashboard-card
 //   entity: media_player.kids_room   # the Music Assistant player it plays on
+//   profile: Kid                     # optional: the child's profile in the integration (default: the first)
 //   title: Hörspiele                 # optional heading on the home page
 //   height: 100vh                    # optional: the card scrolls inside itself at this height
 //   inset_right: 120px               # optional: room on the right for a floating navbar
@@ -74,25 +76,14 @@ class KidsDashboardCard extends LitElement {
         }
 
         this.config = config
-
-        const sizes = {
-            height: '--kids-dashboard-height',
-            inset_right: '--kids-dashboard-inset-right',
-            inset_bottom: '--kids-dashboard-inset-bottom',
-        }
-
-        for (const [key, property] of Object.entries(sizes)) {
-            if (config[key]) {
-                this.style.setProperty(property, config[key])
-            }
-        }
+        applySizes(this, config)
     }
 
     set hass(hass) {
         const first = !this.#hass
 
         this.#hass = hass
-        this.#api = new KidsDashboardApi(hass, this.config.entity)
+        this.#api = new KidsDashboardApi(hass, this.config.entity, this.config.profile)
         this.#playback.api = this.#api
 
         if (first) {
@@ -256,11 +247,12 @@ class KidsDashboardCard extends LitElement {
         this.#openPlaying()
     }
 
-    /** Opens the book that plays now; on that book's own page, Now Playing instead. */
+    /** Opens the book that plays now; on that book's own page, or for anything but a book, Now Playing. */
     #openPlaying() {
         const id = this.#playback.book?.id
 
         if (!id) {
+            nowPlaying.show()
             return
         }
 

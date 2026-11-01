@@ -1,5 +1,6 @@
 import { LitElement } from 'lit'
 import { KidsDashboardApi } from './api.js'
+import { isEpisode } from './format.js'
 import { nowPlaying } from './now-playing.js'
 import { PlaybackController } from './playback.js'
 import { nowPlayingStyles } from './styles.js'
@@ -7,7 +8,8 @@ import { nowPlayingMedia, renderNowPlaying } from './views/now-playing.js'
 
 // kids-now-playing-card: Now Playing over the whole screen, navbar and its player included. It comes up as soon
 // as the player starts and stays through a pause, until the player has been stopped for a while; until then
-// the card takes no room. It belongs on every view, and the views share whether it is up.
+// the card takes no room. It belongs on every view, and the views share whether it is up. While a podcast
+// episode is the player's, it sets --kids-dashboard-skip-display: none on the page (see SKIP_DISPLAY).
 //
 //   type: custom:kids-now-playing-card
 //   entity: media_player.kids_room   # the Music Assistant player it shows
@@ -21,6 +23,14 @@ const STEADY = 1.5
 // Music Assistant cannot pause the Echo's player: a pause stops it and keeps the place. Like the navbar's
 // player, Now Playing stays through a pause and counts it as the end only after this long.
 const ENDED_AFTER = 10 * 60 * 1000
+
+// How far back and next skip in a podcast episode, in seconds.
+const SKIP = 30
+
+// "none" on the page while a podcast episode is the player's, for a floating player around the dashboard to
+// hide its skip button by: an episode is alone in the queue, so skipping does nothing. A custom property
+// reaches into every card's shadow root, which a class on the page would not.
+const SKIP_DISPLAY = '--kids-dashboard-skip-display'
 
 class KidsNowPlayingCard extends LitElement {
     static styles = nowPlayingStyles
@@ -67,6 +77,8 @@ class KidsNowPlayingCard extends LitElement {
             return
         }
 
+        this.#tellSkip(isEpisode(entity.attributes.media_content_id))
+
         if (entity.state === 'playing') {
             nowPlaying.started(entity.last_changed)
             return
@@ -111,11 +123,22 @@ class KidsNowPlayingCard extends LitElement {
             playing,
             onClose: () => nowPlaying.dismiss(playing),
             onToggle: () => this.#toggle(),
-            onPrevious: () => this.#skip('previous', media.book),
-            onNext: () => this.#skip('next', media.book),
+            onPrevious: () => this.#skip('previous', media),
+            onNext: () => this.#skip('next', media),
             onScrub: (position) => (this.scrub = position),
             onSeek: (position) => this.#seek(position, media.book),
         })
+    }
+
+    #tellSkip(episode) {
+        const root = document.documentElement.style
+
+        if (episode) {
+            root.setProperty(SKIP_DISPLAY, 'none')
+            return
+        }
+
+        root.removeProperty(SKIP_DISPLAY)
     }
 
     #onChanged = () => {
@@ -132,8 +155,10 @@ class KidsNowPlayingCard extends LitElement {
         }
 
         const entity = this.#hass.states[this.config.entity]
+        // Since the last playback, not the last change: the Echo coming back after a restart changes the state too.
+        const lastPlayed = entity?.attributes.media_position_updated_at || entity?.last_changed
 
-        if (entity?.state !== 'playing' && Date.now() - Date.parse(entity?.last_changed) >= ENDED_AFTER) {
+        if (entity?.state !== 'playing' && Date.now() - Date.parse(lastPlayed) >= ENDED_AFTER) {
             nowPlaying.hide()
             return
         }
@@ -177,11 +202,20 @@ class KidsNowPlayingCard extends LitElement {
 
     /**
      * Back and next move a chapter in an audiobook: back to the chapter's start, or the one before within its
-     * first seconds (the integration's chapter_prev). Anything else skips as its player does.
+     * first seconds (the integration's chapter_prev). In a podcast episode they skip half a minute. Anything
+     * else skips as its player does.
      */
-    async #skip(direction, book) {
-        if (book) {
+    async #skip(direction, media) {
+        if (media.book) {
             await this.#playback.command(direction === 'next' ? 'chapter_next' : 'chapter_prev')
+            return
+        }
+
+        if (media.episode) {
+            const position = media.position + (direction === 'next' ? SKIP : -SKIP)
+
+            // Not past the end, which would end the episode, nor to second 0, which Music Assistant ignores.
+            await this.#seek(Math.max(1, media.end ? Math.min(position, media.end - 1) : position), false)
             return
         }
 

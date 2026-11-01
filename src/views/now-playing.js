@@ -1,11 +1,12 @@
 import { html } from 'lit'
-import { chapterName, formatTime, imageUrl } from '../format.js'
+import { chapterName, formatTime, imageUrl, isEpisode } from '../format.js'
 import { icons } from '../icons.js'
 
 /**
  * Now Playing over everything, lined up on the cover: back, play/pause and next level with its middle, the
  * timeline of the chapter that plays at its foot, and the times level with the title below it. A small close
- * button sits in the corner; a tap anywhere but on the controls closes it too.
+ * button sits in the corner; a tap anywhere but on the controls closes it too. For a podcast episode, back and
+ * next skip half a minute: an episode has no chapters, and the queue nothing after it.
  */
 export function renderNowPlaying({ media, playing, onClose, onToggle, onPrevious, onNext, onScrub, onSeek }) {
     const length = Math.max(1, media.end - media.start)
@@ -28,11 +29,15 @@ export function renderNowPlaying({ media, playing, onClose, onToggle, onPrevious
                 </div>
 
                 <div class="controls" @click=${stop}>
-                    <button class="control" aria-label="Zurück" @click=${onPrevious}>${icons.previous}</button>
+                    ${media.episode
+                        ? html`<button class="control" aria-label="30 Sekunden zurück" @click=${onPrevious}>${icons.back30}</button>`
+                        : html`<button class="control" aria-label="Zurück" @click=${onPrevious}>${icons.previous}</button>`}
                     <button class="control main" aria-label=${playing ? 'Pause' : 'Abspielen'} @click=${onToggle}>
                         ${playing ? icons.pause : icons.play}
                     </button>
-                    <button class="control" aria-label="Weiter" @click=${onNext}>${icons.next}</button>
+                    ${media.episode
+                        ? html`<button class="control" aria-label="30 Sekunden vor" @click=${onNext}>${icons.forward30}</button>`
+                        : html`<button class="control" aria-label="Weiter" @click=${onNext}>${icons.next}</button>`}
                 </div>
 
                 <input
@@ -90,6 +95,7 @@ export function nowPlayingMedia(state, elapsed, entity) {
 
     return {
         book: false,
+        episode: isEpisode(attributes.media_content_id),
         cover: attributes.entity_picture || '',
         title: chapterName(attributes.media_title),
         detail: attributes.media_artist || '',

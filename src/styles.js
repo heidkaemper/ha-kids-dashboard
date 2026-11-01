@@ -263,6 +263,30 @@ export const styles = css`
         font-size: 18px;
     }
 
+    /* An episode's row: the title, and under it the podcast, the day and the length */
+    .row .text {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        min-width: 0;
+    }
+
+    .row .meta {
+        overflow: hidden;
+        color: var(--secondary-text-color);
+        font-size: 14px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+
+    .row .heard {
+        right: 3px;
+        bottom: 3px;
+        width: 18px;
+        height: 18px;
+        padding: 2px;
+    }
+
     /* A book */
 
     .book {

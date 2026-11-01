@@ -7,14 +7,18 @@ in a child's room (an Echo Show 5 with Kiosk Satellite, 960×480), so it has to 
 
 ## Layout
 
-- `src/` is the cards' source: `kids-dashboard-card` (the audiobooks), `kids-clock-card` (the home screen) and
-  `kids-now-playing-card` (over everything while something plays), all bundled from `src/index.js`. `npm run build` bundles them into `custom_components/kids_dashboard/www/`.
+- `src/` is the cards' source: `kids-dashboard-card` (the audiobooks), `kids-podcasts-card` (the podcasts),
+  `kids-clock-card` (the home screen) and `kids-now-playing-card` (over everything while something plays), all
+  bundled from `src/index.js`. `npm run build` bundles them into `custom_components/kids_dashboard/www/`.
   The built file is not committed (`www/` is in `.gitignore`): build before copying the integration anywhere;
   `deploy.sh` does.
 - `custom_components/kids_dashboard/` is the integration: it talks to Music Assistant, answers the card over
   Home Assistant's websocket (`kids_dashboard/*`), serves the card and the covers, and adds the card to the
   dashboard resources by itself.
 - The card talks only to Home Assistant, never to Music Assistant or anything else directly.
+- Each child has a profile (a config subentry): the token of its own Music Assistant user. Music Assistant keeps
+  progress, what was played and (from 2.11) likes per user, so a child's commands go through its profile's
+  token. A card names its profile with `profile:`; without one, the first profile counts.
 
 
 ## JavaScript

@@ -50,13 +50,16 @@ export class SwipeBackController {
     }
 
     #down = (event) => {
+        // A swipe's click, if one comes at all (a touch that moved makes none), comes before the next touch:
+        // whatever that touch does is a tap of its own, even where swiping back is off, as on the overview.
+        this.#swiped = false
+
         if (!event.isPrimary || !this.#enabled()) {
             return
         }
 
         this.#start = { x: event.clientX, y: event.clientY, id: event.pointerId }
         this.#sideways = false
-        this.#swiped = false
     }
 
     #move = (event) => {

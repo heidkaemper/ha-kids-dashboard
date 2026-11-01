@@ -1,5 +1,5 @@
-"""Kids Dashboard: a kids' room screen for Home Assistant. Its first part is the audiobooks ("Hörspiele")
-from Music Assistant, grouped as Music Assistant groups them.
+"""Kids Dashboard: a kids' room screen for Home Assistant: the audiobooks ("Hörspiele") from Music Assistant,
+grouped as Music Assistant groups them, and the podcasts a child likes there.
 
 The integration keeps the library and talks to Music Assistant; the card (served from this folder and
 loaded on every dashboard) talks only to Home Assistant, over its websocket.
@@ -12,11 +12,12 @@ import logging
 from pathlib import Path
 import re
 import time
+from types import MappingProxyType
 
 from aiohttp import web
 from homeassistant.components import websocket_api
 from homeassistant.components.http import HomeAssistantView, StaticPathConfig
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import EVENT_CALL_SERVICE, EVENT_HOMEASSISTANT_STARTED
 from homeassistant.core import CoreState, Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv, entity_registry as er
@@ -24,8 +25,18 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.storage import Store
 import voluptuous as vol
 
-from .const import CARD_URL, CONF_TOKEN, CONF_URL, DOMAIN, IMAGE_URL, REFRESH_INTERVAL, VERSION
+from .const import (
+    CARD_URL,
+    CONF_TOKEN,
+    CONF_URL,
+    DOMAIN,
+    IMAGE_URL,
+    REFRESH_INTERVAL,
+    SUBENTRY_PROFILE,
+    VERSION,
+)
 from .library import Library, MusicAssistant, MusicAssistantError
+from .podcasts import Podcasts
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,7 +51,17 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
         [StaticPathConfig(CARD_URL, str(Path(__file__).parent / "www" / "kids-dashboard-card.js"), False)]
     )
     hass.http.register_view(CoverView(hass))
-    for command in (ws_library, ws_recent, ws_series, ws_book, ws_state, ws_command):
+    for command in (
+        ws_library,
+        ws_recent,
+        ws_series,
+        ws_book,
+        ws_state,
+        ws_command,
+        ws_podcasts,
+        ws_podcast,
+        ws_episodes,
+    ):
         websocket_api.async_register_command(hass, command)
 
     async def add_resource(_event=None) -> None:
@@ -76,8 +97,51 @@ async def _ensure_resource(hass: HomeAssistant) -> None:
     await resources.async_create_item({"res_type": "module", "url": url})
 
 
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Version 1 had one token; from version 2 each child has a profile with its own. The one token becomes
+    the first profile, so the dashboard carries on until the children's profiles are added."""
+    if entry.version > 2:
+        return False
+    if entry.version == 1:
+        token = entry.data[CONF_TOKEN]
+        try:
+            user = await MusicAssistant(hass, entry.data[CONF_URL], token).user()
+        except MusicAssistantError:
+            user = {}
+        hass.config_entries.async_add_subentry(
+            entry,
+            ConfigSubentry(
+                data=MappingProxyType({CONF_TOKEN: token}),
+                subentry_type=SUBENTRY_PROFILE,
+                title=user.get("display_name") or user.get("username") or "Standard",
+                unique_id=user.get("user_id"),
+            ),
+        )
+        hass.config_entries.async_update_entry(entry, data={CONF_URL: entry.data[CONF_URL]}, version=2)
+    return True
+
+
+def _clients(hass: HomeAssistant, entry: ConfigEntry):
+    """The profiles' connections to Music Assistant, read from the entry each time, so a profile added or
+    removed counts without a reload. One connection per token, made once."""
+    made: dict[str, MusicAssistant] = {}
+
+    def clients() -> dict[str, MusicAssistant]:
+        out: dict[str, MusicAssistant] = {}
+        for sub in entry.subentries.values():
+            if sub.subentry_type != SUBENTRY_PROFILE:
+                continue
+            token = sub.data[CONF_TOKEN]
+            if token not in made:
+                made[token] = MusicAssistant(hass, entry.data[CONF_URL], token)
+            out[sub.title.casefold()] = made[token]
+        return out
+
+    return clients
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: KidsDashboardConfigEntry) -> bool:
-    lib = Library(MusicAssistant(hass, entry.data[CONF_URL], entry.data[CONF_TOKEN]))
+    lib = Library(_clients(hass, entry), Podcasts())
     # What played last on each player outlives restarts, so each screen keeps its own order. Taken over once
     # from the integration's earlier name, Hörspiele.
     store: Store[dict] = Store(hass, 1, f"{DOMAIN}.recent")
@@ -86,12 +150,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: KidsDashboardConfigEntry
     heard: Store[dict] = Store(hass, 1, f"{DOMAIN}.heard")
     lib.heard = await heard.async_load() or {}
 
+    # When each podcast episode was first seen, for "Kürzlich aktualisiert" where a feed gives no dates.
+    seen: Store[dict] = Store(hass, 1, f"{DOMAIN}.episodes")
+    lib.podcasts.seen = await seen.async_load() or {}
+
     @callback
     def save_recent() -> None:
         store.async_delay_save(lambda: lib.recent, 30)
         heard.async_delay_save(lambda: lib.heard, 30)
 
     lib.on_recent = save_recent
+    lib.podcasts.on_seen = lambda: seen.async_delay_save(lambda: lib.podcasts.seen, 30)
     entry.runtime_data = lib
     # The first read can take a while (every audiobook's details): the card waits for it,
     # Home Assistant does not.
@@ -167,7 +236,7 @@ def _handler(fn):
             connection.send_error(msg["id"], "not_set_up", "Kids Dashboard is not set up")
             return
         try:
-            if not lib.series and not lib.read_at:
+            if not lib.shelves and not lib.read_at:
                 await lib.refresh()
             connection.send_result(msg["id"], await fn(hass, lib, msg))
         except MusicAssistantError as err:
@@ -176,49 +245,56 @@ def _handler(fn):
     return run
 
 
+# Every command names the card's profile; without one, the first profile counts.
+PROFILE = vol.Optional("profile")
+
+
 @websocket_api.websocket_command(
-    {vol.Required("type"): "kids_dashboard/library", vol.Optional("entity_id"): str}
+    {vol.Required("type"): "kids_dashboard/library", vol.Optional("entity_id"): str, PROFILE: str}
 )
 @websocket_api.async_response
 @_handler
 async def ws_library(hass, lib: Library, msg):
-    return lib.overview(_player_id(hass, msg["entity_id"]) if msg.get("entity_id") else None)
+    player_id = _player_id(hass, msg["entity_id"]) if msg.get("entity_id") else None
+    return lib.overview(player_id, msg.get("profile"))
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "kids_dashboard/recent", vol.Required("entity_id"): str}
+    {vol.Required("type"): "kids_dashboard/recent", vol.Required("entity_id"): str, PROFILE: str}
 )
 @websocket_api.async_response
 @_handler
 async def ws_recent(hass, lib: Library, msg):
-    return lib.recently_heard(_player_id(hass, msg["entity_id"]))
+    return lib.recently_heard(_player_id(hass, msg["entity_id"]), msg.get("profile"))
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "kids_dashboard/series", vol.Required("series_id"): str}
+    {vol.Required("type"): "kids_dashboard/series", vol.Required("series_id"): str, PROFILE: str}
 )
 @websocket_api.async_response
 @_handler
 async def ws_series(hass, lib: Library, msg):
-    if (found := lib.collection(msg["series_id"])) is None:
+    if (found := lib.collection(msg["series_id"], msg.get("profile"))) is None:
         raise MusicAssistantError("unknown series")
     return found
 
 
-@websocket_api.websocket_command({vol.Required("type"): "kids_dashboard/book", vol.Required("book_id"): str})
+@websocket_api.websocket_command(
+    {vol.Required("type"): "kids_dashboard/book", vol.Required("book_id"): str, PROFILE: str}
+)
 @websocket_api.async_response
 @_handler
 async def ws_book(hass, lib: Library, msg):
-    return await lib.book(msg["book_id"])
+    return await lib.book(msg["book_id"], msg.get("profile"))
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): "kids_dashboard/state", vol.Required("entity_id"): str}
+    {vol.Required("type"): "kids_dashboard/state", vol.Required("entity_id"): str, PROFILE: str}
 )
 @websocket_api.async_response
 @_handler
 async def ws_state(hass, lib: Library, msg):
-    return await lib.state(_player_id(hass, msg["entity_id"]))
+    return await lib.state(_player_id(hass, msg["entity_id"]), msg.get("profile"))
 
 
 @websocket_api.websocket_command(
@@ -231,15 +307,63 @@ async def ws_state(hass, lib: Library, msg):
         vol.Optional("uri", default=""): str,
         vol.Optional("position", default=0): vol.Coerce(float),
         vol.Optional("from_position", default=False): bool,
+        PROFILE: str,
     }
 )
 @websocket_api.async_response
 @_handler
 async def ws_command(hass, lib: Library, msg):
     await lib.command(
-        _player_id(hass, msg["entity_id"]), msg["action"], msg["uri"], msg["position"], msg["from_position"]
+        _player_id(hass, msg["entity_id"]),
+        msg["action"],
+        msg["uri"],
+        msg["position"],
+        msg["from_position"],
+        profile=msg.get("profile"),
     )
     return {"ok": True}
+
+
+@websocket_api.websocket_command({vol.Required("type"): "kids_dashboard/podcasts", PROFILE: str})
+@websocket_api.async_response
+@_handler
+async def ws_podcasts(hass, lib: Library, msg):
+    return await lib.podcasts.overview(lib.ma(msg.get("profile")))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "kids_dashboard/podcast",
+        vol.Required("podcast_id"): str,
+        vol.Optional("fresh", default=True): bool,
+        PROFILE: str,
+    }
+)
+@websocket_api.async_response
+@_handler
+async def ws_podcast(hass, lib: Library, msg):
+    """A podcast's episodes; fresh=False takes them as last read, for the card to have them ready."""
+    ma = lib.ma(msg.get("profile"))
+    if (found := await lib.podcasts.podcast(ma, msg["podcast_id"], fresh=msg["fresh"])) is None:
+        raise MusicAssistantError("unknown podcast")
+    return found
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "kids_dashboard/episodes",
+        vol.Required("list"): vol.In(["recent", "latest"]),
+        PROFILE: str,
+    }
+)
+@websocket_api.async_response
+@_handler
+async def ws_episodes(hass, lib: Library, msg):
+    """The episodes behind the two tiles: "Zuletzt gehört" and "Kürzlich aktualisiert"."""
+    ma = lib.ma(msg.get("profile"))
+    if msg["list"] == "recent":
+        return await lib.podcasts.recent(ma)
+    return await lib.podcasts.latest(ma)
 
 
 PROXY_ID = re.compile(r"^[0-9a-f]{16,128}$")
@@ -287,7 +411,10 @@ class CoverView(HomeAssistantView):
 
     async def _fetch(self, path: Path, proxy_id: str, size: int) -> bytes | None:
         lib = _library(self.hass)
-        data = await lib.ma.image(proxy_id, size) if lib else None
+        try:
+            data = await lib.ma().image(proxy_id, size) if lib else None
+        except MusicAssistantError:
+            data = None
         if data is not None:
             await self.hass.async_add_executor_job(_write, path, data)
         return data

@@ -1,7 +1,12 @@
-"""The audiobook library as Music Assistant groups it, and what the card's buttons ask of a player.
+"""The audiobook library as Music Assistant groups it, the podcasts, and what the card's buttons ask of a
+player.
 
 Home Assistant's Music Assistant integration passes only an audiobook's name, image and URI on. The
 collections (series) and chapters are in Music Assistant's own API, so this talks to it directly.
+
+Each child has a profile: a user of its own in Music Assistant, reached with its own token. Music Assistant
+keeps per user how far a book or an episode got, what was played lately and (from 2.11) what is liked, so
+everything a child does goes through its profile.
 """
 
 from __future__ import annotations
@@ -13,13 +18,16 @@ import hashlib
 import logging
 import re
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .const import HEARD_AFTER, IMAGE_URL, RECENT_BOOKS
+from .const import EPISODE, HEARD_AFTER, IMAGE_URL, RECENT_BOOKS
+
+if TYPE_CHECKING:
+    from .podcasts import Podcasts
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -53,6 +61,10 @@ class MusicAssistant:
                 return await resp.json(content_type=None)
         except (aiohttp.ClientError, TimeoutError) as err:
             raise MusicAssistantError(f"{command}: {err}") from err
+
+    async def user(self) -> dict:
+        """The Music Assistant user the token belongs to."""
+        return await self.command("auth/me")
 
     async def image(self, proxy_id: str, size: int) -> bytes | None:
         try:
@@ -126,14 +138,24 @@ def to_book(item: dict) -> dict:
 
 
 @dataclass
-class Library:
-    """The library, read every minute with the authors' pictures; each audiobook's details (collection,
-    chapters) are read once."""
+class Shelf:
+    """The audiobooks as one profile sees them: the same books for every child, its own progress in them."""
 
-    ma: MusicAssistant
     series: list[dict] = field(default_factory=list)
     by_id: dict[str, dict] = field(default_factory=dict)
     books: dict[str, dict] = field(default_factory=dict)
+
+
+@dataclass
+class Library:
+    """The library, read every minute with the authors' pictures, once per profile for its progress; each
+    audiobook's details (collection, chapters) are read once."""
+
+    # The profiles' connections to Music Assistant by name (casefolded), asked each time, so a profile
+    # added or removed counts at once. The first is the default.
+    clients: Callable[[], dict[str, MusicAssistant]]
+    podcasts: Podcasts
+    shelves: dict[str, Shelf] = field(default_factory=dict)
     details: dict[str, dict] = field(default_factory=dict)
     author_images: dict[str, str] = field(default_factory=dict)
     # When each group last played on each player: {player_id: {series_id: unix time}}, kept by Home Assistant.
@@ -146,9 +168,45 @@ class Library:
     read_at: float = 0
     _lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
+    def ma(self, profile: str | None = None) -> MusicAssistant:
+        """A profile's connection to Music Assistant, by name; without one, the first profile's."""
+        return self.clients()[self._profile(profile)]
+
+    def _profile(self, profile: str | None) -> str:
+        clients = self.clients()
+        if not clients:
+            raise MusicAssistantError("no profile is set up")
+        if not profile:
+            return next(iter(clients))
+        if profile.casefold() not in clients:
+            raise MusicAssistantError(f"unknown profile {profile}")
+        return profile.casefold()
+
+    def _shelf(self, profile: str | None) -> Shelf:
+        return self.shelves.get(self._profile(profile)) or Shelf()
+
     async def refresh(self) -> None:
         async with self._lock:
-            items = await self.ma.command("music/audiobooks/library_items", limit=5000)
+            clients = self.clients()
+            if not clients:
+                return
+            # The books are the same for every profile; how far each child got in them is not.
+            lists = await asyncio.gather(
+                *(ma.command("music/audiobooks/library_items", limit=5000) for ma in clients.values()),
+                return_exceptions=True,
+            )
+            by_profile: dict[str, list[dict]] = {}
+            for name, found in zip(clients, lists, strict=True):
+                if isinstance(found, MusicAssistantError):
+                    _LOGGER.warning("Reading the audiobooks of profile %s failed: %s", name, found)
+                elif isinstance(found, BaseException):
+                    raise found
+                else:
+                    by_profile[name] = found
+            if not by_profile:
+                raise MusicAssistantError("no profile could read the audiobooks")
+            ma = clients[next(iter(by_profile))]
+            items = next(iter(by_profile.values()))
             missing = [it["item_id"] for it in items if self._outdated(it)]
             if missing:
                 sem = asyncio.Semaphore(6)
@@ -156,7 +214,7 @@ class Library:
                 async def fetch(item_id: str) -> None:
                     async with sem:
                         try:
-                            self.details[item_id] = await self.ma.command(
+                            self.details[item_id] = await ma.command(
                                 "music/item_by_uri", uri=f"library://audiobook/{item_id}"
                             )
                         except MusicAssistantError as err:
@@ -165,7 +223,7 @@ class Library:
                 await asyncio.gather(*(fetch(i) for i in missing))
                 _LOGGER.debug("Read the details of %d new or changed audiobooks", len(missing))
             try:
-                artists = await self.ma.command("music/artists/library_items", limit=5000)
+                artists = await ma.command("music/artists/library_items", limit=5000)
                 self.author_images = {
                     a["name"]: imgs[0]["proxy_id"]
                     for a in artists
@@ -173,7 +231,7 @@ class Library:
                 }
             except MusicAssistantError as err:
                 _LOGGER.warning("Reading the authors' pictures failed: %s", err)
-            self._build(items)
+            self.shelves = {name: self._build(found) for name, found in by_profile.items()}
             self.read_at = time.monotonic()
 
     def _outdated(self, item: dict) -> bool:
@@ -185,7 +243,7 @@ class Library:
             return True
         return (known["name"], _authors(known)) != (item["name"], _authors(item))
 
-    def _build(self, items: list[dict]) -> None:
+    def _build(self, items: list[dict]) -> Shelf:
         by_id: dict[str, dict] = {}
         books: dict[str, dict] = {}
         order: list[dict] = []
@@ -226,16 +284,16 @@ class Library:
                     b["cover"] for b in s["books"][:1] if b["cover"]
                 ]
         order.sort(key=lambda s: s["name"].lower())
-        self.series, self.by_id, self.books = order, by_id, books
+        return Shelf(order, by_id, books)
 
     def chapters(self, item_id: str) -> list[dict]:
         return ((self.details.get(item_id) or {}).get("metadata") or {}).get("chapters") or []
 
-    def overview(self, player_id: str | None = None) -> list[dict]:
+    def overview(self, player_id: str | None = None, profile: str | None = None) -> list[dict]:
         """The home page's groups. For a player, the groups it played lately come first, the latest first; the
         rest by name."""
         played = self.recent.get(player_id or "", {})
-        order = sorted(self.series, key=lambda s: -played.get(s["id"], 0))
+        order = sorted(self._shelf(profile).series, key=lambda s: -played.get(s["id"], 0))
         return [{k: v for k, v in s.items() if k != "books"} for s in order]
 
     def played(self, player_id: str, book: dict) -> None:
@@ -257,14 +315,15 @@ class Library:
         if self.on_recent:
             self.on_recent()
 
-    def recently_heard(self, player_id: str) -> list[dict]:
+    def recently_heard(self, player_id: str, profile: str | None = None) -> list[dict]:
         """The books heard lately on a player, the latest first; ones gone from the library are left out."""
         heard = self.heard.get(player_id, {})
         latest = sorted(heard, key=heard.get, reverse=True)
-        return [{k: v for k, v in self.books[i].items() if k != "sort"} for i in latest if i in self.books]
+        books = self._shelf(profile).books
+        return [{k: v for k, v in books[i].items() if k != "sort"} for i in latest if i in books]
 
-    def collection(self, sid: str) -> dict | None:
-        s = self.by_id.get(sid)
+    def collection(self, sid: str, profile: str | None = None) -> dict | None:
+        s = self._shelf(profile).by_id.get(sid)
         if s is None:
             return None
         return {
@@ -272,21 +331,23 @@ class Library:
             "books": [{k: v for k, v in b.items() if k != "sort"} for b in s["books"]],
         }
 
-    async def book(self, item_id: str) -> dict:
+    async def book(self, item_id: str, profile: str | None = None) -> dict:
         """One audiobook with its chapters, read fresh so its resume point is current."""
-        item = await self.ma.command("music/item_by_uri", uri=f"library://audiobook/{item_id}")
+        item = await self.ma(profile).command("music/item_by_uri", uri=f"library://audiobook/{item_id}")
         self.details[item_id] = item
         book = to_book(item)
         book.pop("sort")
         book["chapters"] = self.chapters(item_id)
         return book
 
-    async def state(self, player_id: str) -> dict:
-        """What plays: the book, where in it, and which chapter."""
-        queue = await self.ma.command("player_queues/get", queue_id=player_id)
+    async def state(self, player_id: str, profile: str | None = None) -> dict:
+        """What plays: the book, where in it, and which chapter; or the episode, and its podcast."""
+        ma = self.ma(profile)
+        queue = await ma.command("player_queues/get", queue_id=player_id)
         out: dict[str, Any] = {
             "state": (queue or {}).get("state", "idle"),
             "book": None,
+            "episode": None,
             "elapsed": 0,
             "duration": 0,
             "chapter": None,
@@ -296,10 +357,12 @@ class Library:
         item = current.get("media_item")
         if out["state"] != "playing":
             self._playing.pop(player_id, None)
+        if item and item.get("media_type") == "podcast_episode":
+            out["episode"] = {"uri": item["uri"], "podcast_id": await self.podcasts.podcast_of(ma, item)}
         if not item or item.get("media_type") != "audiobook":
             self._playing.pop(player_id, None)
             return out
-        known = self.books.get(item["item_id"])
+        known = self._shelf(profile).books.get(item["item_id"])
         book = dict(known) if known else to_book(item)
         book.pop("sort", None)
         elapsed = queue.get("elapsed_time") or 0
@@ -321,42 +384,56 @@ class Library:
         )
         return out
 
-    async def wait_playing(self, player_id: str, uri: str) -> None:
+    async def wait_playing(self, ma: MusicAssistant, player_id: str, uri: str) -> None:
         """Wait until the queue plays uri, so a seek lands in the new book rather than the old."""
         for _ in range(40):
-            queue = await self.ma.command("player_queues/get", queue_id=player_id)
+            queue = await ma.command("player_queues/get", queue_id=player_id)
             item = ((queue or {}).get("current_item") or {}).get("media_item") or {}
             if queue and queue.get("state") == "playing" and item.get("uri") == uri:
                 return
             await asyncio.sleep(0.25)
 
     async def command(
-        self, player_id: str, action: str, uri: str = "", position: float = 0, from_position: bool = False
+        self,
+        player_id: str,
+        action: str,
+        uri: str = "",
+        position: float = 0,
+        from_position: bool = False,
+        *,
+        profile: str | None = None,
     ) -> None:
+        # What a child starts plays as its own user, so Music Assistant keeps its progress apart.
+        ma = self.ma(profile)
+
         async def seek(pos: float) -> None:
             # Music Assistant takes a seek to 0 as no seek at all (tried on a Sendspin player), so the very
             # start is asked for as second 1.
-            await self.ma.command("player_queues/seek", queue_id=player_id, position=int(max(1, pos)))
+            await ma.command("player_queues/seek", queue_id=player_id, position=int(max(1, pos)))
 
-        if action in ("play", "restart"):
+        if action in ("play", "restart") and EPISODE in uri:
+            # An episode starts where it was left too, and has no chapters to look for.
+            restart = {"start_from_beginning": True} if action == "restart" else {}
+            await ma.command(
+                "player_queues/play_media", queue_id=player_id, media=[uri], option="replace", **restart
+            )
+        elif action in ("play", "restart"):
             if not uri.startswith("library://audiobook/"):
                 raise MusicAssistantError("not an audiobook")
             if action == "restart":
                 from_position, position = True, 0
-            await self.ma.command(
-                "player_queues/play_media", queue_id=player_id, media=[uri], option="replace"
-            )
+            await ma.command("player_queues/play_media", queue_id=player_id, media=[uri], option="replace")
             # Music Assistant starts an audiobook where it was left. A chapter, or starting over, then moves
             # to where it asks, once the book is playing (a seek before that is lost to the resume).
             if from_position:
-                await self.wait_playing(player_id, uri)
+                await self.wait_playing(ma, player_id, uri)
                 await seek(position)
         elif action == "play_pause":
-            await self.ma.command("player_queues/play_pause", queue_id=player_id)
+            await ma.command("player_queues/play_pause", queue_id=player_id)
         elif action == "seek":
             await seek(position)
         elif action in ("chapter_prev", "chapter_next"):
-            st = await self.state(player_id)
+            st = await self.state(player_id, profile)
             if not st["book"]:
                 return
             chapters = self.chapters(st["book"]["id"])

@@ -19,7 +19,8 @@ export function renderGroup({ books, onOpenBook }) {
     `
 }
 
-function progressMark(book) {
+/** A tick once heard, a bar while begun: on a book's cover, and on an episode's. */
+export function progressMark(book) {
     if (book.played) {
         return html`<span class="heard">${icons.check}</span>`
     }

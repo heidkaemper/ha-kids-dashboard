@@ -3,18 +3,41 @@
     "step": {
       "user": {
         "title": "Music Assistant",
-        "description": "Kids Dashboard liest die Hörbücher mit ihren Sammlungen und Kapiteln direkt aus Music Assistant. Lege dafür in Music Assistant einen Langzeit-Token an, am besten für einen eigenen Benutzer.",
+        "description": "Kids Dashboard liest die Hörspiele mit Reihen und Kapiteln und die Podcasts direkt aus Music Assistant. Leg in Music Assistant für jedes Kind einen eigenen Benutzer an, melde dich als dieser Benutzer an und erstelle dort ein langlebiges Token. Dieses erste Token wird das Profil des ersten Kindes, die anderen kommen danach dazu.",
         "data": {
           "url": "Adresse von Music Assistant",
-          "token": "Token für Music Assistant"
+          "token": "Music-Assistant-Token des Kinder-Benutzers"
         }
       }
     },
     "error": {
-      "cannot_connect": "Music Assistant ist nicht erreichbar oder lehnt den Token ab."
+      "cannot_connect": "Music Assistant ist nicht erreichbar oder hat das Token abgelehnt."
     },
     "abort": {
       "already_configured": "Kids Dashboard ist schon eingerichtet."
+    }
+  },
+  "config_subentries": {
+    "profile": {
+      "entry_type": "Profil",
+      "initiate_flow": {
+        "user": "Profil hinzufügen"
+      },
+      "step": {
+        "user": {
+          "title": "Profil",
+          "description": "Das Profil eines Kindes: In Music Assistant als Benutzer des Kindes anmelden und dort ein langlebiges Token erstellen. Das Profil heißt wie dieser Benutzer, eine Karte wählt es mit `profile:`.",
+          "data": {
+            "token": "Music-Assistant-Token des Kinder-Benutzers"
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Music Assistant ist nicht erreichbar oder hat das Token abgelehnt."
+      },
+      "abort": {
+        "already_configured": "Für diesen Music-Assistant-Benutzer gibt es schon ein Profil."
+      }
     }
   }
 }

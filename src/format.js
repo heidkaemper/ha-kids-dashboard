@@ -1,5 +1,13 @@
 // How times and names read on the screen.
 
+// Music Assistant's URIs name what they point to: provider://podcast_episode/…
+const EPISODE = /^[^:]+:\/\/podcast_episode\//
+
+/** Whether a Music Assistant URI is a podcast episode's. */
+export function isEpisode(uri) {
+    return EPISODE.test(uri ?? '')
+}
+
 /** Seconds as 1:02:03 or 2:03. */
 export function formatTime(seconds) {
     const total = Math.max(0, Math.floor(seconds || 0))
@@ -19,9 +27,33 @@ export function chapterName(name) {
     return String(name || '').replace(/^\d+\s*-\s*/, '')
 }
 
-/** "1 Hörspiel", "12 Hörspiele". */
-export function countLabel(count) {
-    return `${count} ${count === 1 ? 'Hörspiel' : 'Hörspiele'}`
+/** "1 Hörspiel", "12 Hörspiele"; with other words, "1 Folge", "12 Folgen". */
+export function countLabel(count, [one, many] = ['Hörspiel', 'Hörspiele']) {
+    return `${count} ${count === 1 ? one : many}`
+}
+
+/** A day as a child says it: "Heute", "Gestern", "12. Okt.". */
+export function formatDay(iso) {
+    const day = new Date(iso)
+
+    if (Number.isNaN(day.getTime())) {
+        return ''
+    }
+
+    const today = new Date()
+    const yesterday = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 1)
+
+    if (day.toDateString() === today.toDateString()) {
+        return 'Heute'
+    }
+
+    if (day.toDateString() === yesterday.toDateString()) {
+        return 'Gestern'
+    }
+
+    const sameYear = day.getFullYear() === today.getFullYear()
+
+    return day.toLocaleDateString('de-DE', { day: 'numeric', month: 'short', year: sameYear ? undefined : 'numeric' })
 }
 
 /** A cover from the integration at the size wanted; any other picture (a player's art) as it is. */

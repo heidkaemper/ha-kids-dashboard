@@ -2,3 +2,4 @@
 import './kids-dashboard-card.js'
 import './kids-clock-card.js'
 import './kids-now-playing-card.js'
+import './kids-podcasts-card.js'

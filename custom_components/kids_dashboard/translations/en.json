@@ -3,10 +3,10 @@
     "step": {
       "user": {
         "title": "Music Assistant",
-        "description": "Kids Dashboard reads the audiobooks, their collections and chapters straight from Music Assistant. Make a long-lived token in Music Assistant, ideally for a user of its own.",
+        "description": "Kids Dashboard reads the audiobooks, their collections and chapters, and the podcasts straight from Music Assistant. Give each child a user of its own in Music Assistant, sign in as that user and make a long-lived token there. This first token makes the first child's profile; add the others afterwards.",
         "data": {
           "url": "Music Assistant address",
-          "token": "Music Assistant token"
+          "token": "Music Assistant token of the child's user"
         }
       }
     },
@@ -15,6 +15,29 @@
     },
     "abort": {
       "already_configured": "Kids Dashboard is already set up."
+    }
+  },
+  "config_subentries": {
+    "profile": {
+      "entry_type": "Profile",
+      "initiate_flow": {
+        "user": "Add profile"
+      },
+      "step": {
+        "user": {
+          "title": "Profile",
+          "description": "A child's profile: sign in to Music Assistant as the child's own user and make a long-lived token there. The profile is named after that user; a card picks it with `profile:`.",
+          "data": {
+            "token": "Music Assistant token of the child's user"
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Music Assistant could not be reached, or it refused the token."
+      },
+      "abort": {
+        "already_configured": "This Music Assistant user has a profile already."
+      }
     }
   }
 }
